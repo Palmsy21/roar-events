@@ -1035,6 +1035,7 @@ function renderEventDetail(id) {
       <div class="tab ${detailTab==='pos'?'active':''}" onclick="switchDetailTab(${ev.id},'pos')">Purchase Orders</div>
       <div class="tab ${detailTab==='function-sheet'?'active':''}" onclick="switchDetailTab(${ev.id},'function-sheet')">📋 Function Sheet</div>
       <div class="tab ${detailTab==='notes'?'active':''}" onclick="switchDetailTab(${ev.id},'notes')">Notes</div>
+      <div class="tab ${detailTab==='rams'?'active':''}" onclick="switchDetailTab(${ev.id},'rams')">🛡️ RAMS</div>
     </div>
     <div id="detail-tab-content">${renderDetailTabContent(ev, pl, acc, mgr, sp)}</div>`;
 }
@@ -1178,6 +1179,43 @@ function renderDetailTabContent(ev, pl, acc, mgr, sp) {
     </div></div>`;
 
   if (detailTab === 'function-sheet') return renderFunctionSheetTab(ev, pl, acc, mgr);
+
+  if (detailTab === 'rams') {
+    const recentRAMS = (db.ramsLog||[]).filter(r=>r.eventId==ev.id).sort((a,b)=>b.createdAt>a.createdAt?1:-1).slice(0,5);
+    return `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header"><h3>🛡️ Generate Risk Assessment & Method Statement</h3></div>
+      <div class="card-body">
+        <p style="font-size:13px;color:var(--muted);margin-bottom:16px">Click below to open the RAMS builder pre-filled with this event's details. Make sure the RAMS server is running first (double-click <strong>Start ROAR RAMS Server.bat</strong> in the App folder).</p>
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:20px;display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px;">
+          <div><span style="color:var(--muted)">Client:</span> <strong>${acc.name||ev.contactName||'—'}</strong></div>
+          <div><span style="color:var(--muted)">Event:</span> <strong>${ev.name}</strong></div>
+          <div><span style="color:var(--muted)">Date:</span> <strong>${fmtDate(ev.startDate)}</strong></div>
+          <div><span style="color:var(--muted)">Venue:</span> <strong>${ev.venue||'—'}</strong></div>
+          <div><span style="color:var(--muted)">Guests:</span> <strong>${ev.guests||'—'}</strong></div>
+          <div><span style="color:var(--muted)">Event Code:</span> <strong>${ev.code}</strong></div>
+        </div>
+        <button class="btn btn-primary" onclick="openRAMSFromEvent(${ev.id})" style="font-size:14px;padding:10px 24px;">
+          🛡️ Open RAMS Builder (Pre-filled)
+        </button>
+      </div>
+    </div>
+    ${recentRAMS.length>0?`
+    <div class="card">
+      <div class="card-header"><h3>Previous RAMS for this Event</h3></div>
+      <div class="card-body">
+        <table style="width:100%;font-size:13px;border-collapse:collapse">
+          <thead><tr style="border-bottom:2px solid var(--border)"><th style="text-align:left;padding:6px 0">Reference</th><th style="text-align:left;padding:6px 0">Generated</th><th style="text-align:left;padding:6px 0">File</th></tr></thead>
+          <tbody>${recentRAMS.map(r=>`<tr style="border-bottom:1px solid var(--border)">
+            <td style="padding:8px 0">${r.rams_no||'—'}</td>
+            <td style="padding:8px 0">${r.createdAt?r.createdAt.slice(0,10):'—'}</td>
+            <td style="padding:8px 0">${r.filename||'—'}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>
+    </div>`:''}`;
+  }
+
   return '';
 }
 
@@ -2347,6 +2385,30 @@ function ramsPrefillFromEvent() {
   if(ev.guests)document.getElementById('r-guest-count').value=ev.guests;
   showNotification('Event details prefilled!');
 }
+function openRAMSFromEvent(evId) {
+  const ev = db.events.find(e=>e.id==evId); if(!ev) return;
+  const acc = getAccount(ev.accountId);
+  showPage('rams');
+  // Pre-fill after a short delay to let the page render
+  setTimeout(()=>{
+    const customerEl = document.getElementById('r-customer');
+    const eventNameEl = document.getElementById('r-event-name');
+    const eventDateEl = document.getElementById('r-event-date');
+    const venueEl = document.getElementById('r-venue-address');
+    const guestsEl = document.getElementById('r-guest-count');
+    const dateEl = document.getElementById('r-date');
+    if(customerEl) customerEl.value = acc.name||ev.contactName||'';
+    if(eventNameEl) eventNameEl.value = ev.name||'';
+    if(eventDateEl && ev.startDate) eventDateEl.value = ev.startDate;
+    if(venueEl && ev.venue) venueEl.value = ev.venue;
+    if(guestsEl && ev.guests) guestsEl.value = ev.guests;
+    if(dateEl && !dateEl.value) dateEl.value = new Date().toISOString().slice(0,10);
+    // Store the event ID so the generated doc can be logged back
+    window._ramsSourceEventId = evId;
+    showNotification('Event details pre-filled in RAMS builder!');
+  }, 300);
+}
+
 function ramsNext(step) {
   document.querySelectorAll('.rams-step').forEach(s=>s.style.display='none');
   document.getElementById('rams-s'+step).style.display='';
@@ -2370,19 +2432,12 @@ function buildRamsReview() {
       <tr><td style="padding:5px 0;color:var(--muted)">Prepared By</td><td>${document.getElementById('r-prepared-by').value||'—'}</td></tr>
     </table>`;
 }
-async function ramsGenerate() {
-  const customer=document.getElementById('r-customer').value.trim();
-  const eventName=document.getElementById('r-event-name').value.trim();
-  if(!customer||!eventName){alert('Client name and event name are required.');ramsNext(1);return;}
-  const btn=document.getElementById('rams-gen-btn');
-  const status=document.getElementById('rams-gen-status');
-  btn.disabled=true;btn.textContent='⏳ Generating…';
-  status.style.display='block';status.style.background='#eff6ff';status.style.color='#1d4ed8';
-  status.textContent='Connecting to RAMS server…';
+function ramsCollectPayload() {
   const types=[...document.querySelectorAll('#rams-s2 input[type="checkbox"]:checked')].map(c=>c.value);
   const risks=[...document.querySelectorAll('#rams-risk-factors input:checked')].map(c=>c.value);
-  const payload={
-    customer,event_name:eventName,
+  return {
+    customer:document.getElementById('r-customer').value.trim(),
+    event_name:document.getElementById('r-event-name').value.trim(),
     event_type:document.getElementById('r-event-type').value,
     guest_count:document.getElementById('r-guest-count').value||'100',
     venue_address:document.getElementById('r-venue-address').value,
@@ -2407,6 +2462,19 @@ async function ramsGenerate() {
     contact_email:'info@roareventsagency.co.uk',
     activity_types:types,risk_factors:risks
   };
+}
+
+async function ramsGenerate() {
+  const customer=document.getElementById('r-customer').value.trim();
+  const eventName=document.getElementById('r-event-name').value.trim();
+  if(!customer||!eventName){alert('Client name and event name are required.');ramsNext(1);return;}
+  const btn=document.getElementById('rams-gen-btn');
+  const status=document.getElementById('rams-gen-status');
+  btn.disabled=true;btn.textContent='⏳ Generating…';
+  status.style.display='block';status.style.background='#eff6ff';status.style.color='#1d4ed8';
+  status.textContent='Trying RAMS server…';
+  const payload=ramsCollectPayload();
+  let serverOk=false;
   try {
     const res=await fetch(RAMS_API+'/api/generate-events',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     if(!res.ok){const err=await res.json().catch(()=>({error:'Server error '+res.status}));throw new Error(err.error);}
@@ -2419,13 +2487,376 @@ async function ramsGenerate() {
     URL.revokeObjectURL(url);
     status.style.background='#dcfce7';status.style.color='#166534';
     status.textContent='✓ RAMS document generated and downloaded!';
-    btn.textContent='⬇ Generate RAMS Document';btn.disabled=false;
+    serverOk=true;
     setTimeout(()=>ramsLoadRecent(),1500);
-  } catch(err) {
-    status.style.background='#fee2e2';status.style.color='#991b1b';
-    status.textContent='✗ Error: '+err.message+'. Is the RAMS server running?';
-    btn.textContent='⬇ Generate RAMS Document';btn.disabled=false;
+  } catch(e) {
+    // Server not available — fall back to browser generator
+    status.style.background='#fef3c7';status.style.color='#92400e';
+    status.textContent='Server offline — generating in browser (Print to PDF)…';
+    await new Promise(r=>setTimeout(r,400));
+    try { ramsGenerateBrowser(payload); serverOk=true; } catch(e2) { serverOk=false; status.style.background='#fee2e2';status.style.color='#991b1b';status.textContent='✗ Error: '+e2.message; }
   }
+  btn.textContent='⬇ Generate RAMS Document';btn.disabled=false;
+  if(serverOk){ setTimeout(()=>{status.style.display='none';},4000); }
+}
+
+// ── Browser-side RAMS generator (no server needed) ────────────────────────
+const RAMS_METHOD_STATEMENTS = {
+  'Venue Dressing & Decoration':{overview:'Safe installation of decorative elements including hanging items, centrepieces, drapes, florals and signage.',steps:['Inspect all decoration materials for sharp edges, loose components or electrical faults before use.','Plan the layout and identify fixing points approved by the venue before any drilling, pinning or attachment.','Use only approved fixing methods — no nails in plaster without venue permission.','Working at height: use a stable step ladder or podium; never stand on chairs or tables. Two-person operation for any ladder work.','Hanging items must be secured to structural fixing points only — confirm load capacity with venue.','Candles and naked flames: use LED alternatives unless specifically approved by venue; ensure fire extinguisher is adjacent.','Clear any loose materials from walkways immediately — do not leave trip hazards.','Final walkthrough before guest arrival to confirm all installations are secure.'],hazards:['Working at height','Manual handling','Cuts from wire/fixings','Fire (candles/lighting)']},
+  'Furniture & Linen Setup':{overview:'Safe movement and arrangement of tables, chairs, soft furnishings and tableware.',steps:['Inspect tables and chairs for stability before use; remove any damaged items.','Use a sack truck or trolley for moving stacks of chairs or heavy tables.','When carrying tables, maintain clear sightlines; use team lifts for tables over 15kg.','Ensure tables are locked/stable before loading with linen or tableware.','Lay linen flat and secured — overhanging cloths not to create trip hazards.','Glassware and crockery to be unpacked carefully; broken items disposed of safely.','Ensure adequate aisle width (minimum 750mm) between tables for guest and service staff access.','All fire exits and escape routes to remain unobstructed after furniture is set.'],hazards:['Manual handling / back injury','Slips on linen off-cuts','Cuts from broken glass']},
+  'Stage / Platform Erection':{overview:'Safe erection of temporary staging, platforms, podiums and dance floors.',steps:['Only competent persons with appropriate training may erect temporary staging systems.','Review manufacturer\'s instructions and confirm load ratings before erection begins.','Inspect all staging components for damage or wear before assembly.','Erect staging on firm, level ground; use adjustable legs to compensate for uneven surfaces.','Ensure all locking pins and safety clips are correctly fitted and checked.','Install edge protection (handrails, guard rails) on any platform over 500mm high.','Load test the completed structure before use; do not exceed stated maximum load.','Any staging over 600mm in height to have a signed-off inspection by a competent person before guest access.'],hazards:['Working at height','Structural collapse','Manual handling','Falls from platform']},
+  'AV & Production Install':{overview:'Safe installation of audio-visual equipment, lighting rigs, screens, cabling and associated production equipment.',steps:['All electrical connections to be made by a competent person or qualified electrician.','Lighting rigs must be suspended from structural fixing points only — confirm load capacity with venue.','All cables in guest areas to be ramped, taped or run overhead to prevent trip hazards.','PAT test all portable appliances before use; remove any items that fail.','Sound levels to be monitored throughout; staff near PA to use hearing protection.','Ensure no trailing leads across fire exit routes.','Final equipment check before guest arrival — all connections secure, no exposed wiring.'],hazards:['Electrical hazards','Working at height','Manual handling','Noise exposure']},
+  'Catering Setup & Service':{overview:'Safe setup of catering stations, buffet tables, kitchen areas and service during the event.',steps:['All catering staff to hold a minimum Food Hygiene Level 2 certificate.','Hot food kept above 63°C; cold food kept below 8°C. Temperature logs maintained throughout.','Allergen information displayed prominently; separate service utensils for allergen-free dishes.','LPG/gas equipment to be operated by trained persons; connections checked with leak detector.','Wet floor signs displayed at all times in food service and kitchen areas.','Knives and sharp equipment to be stored securely; cut-resistant gloves used where required.','All catering waste removed promptly; bins covered and located away from food service areas.'],hazards:['Burns/scalds','Food safety/allergens','Slips (wet floors)','LPG/gas risk']},
+  'Bar Setup & Operation':{overview:'Safe operation of bar service including alcohol service, glassware and crowd management.',steps:['Challenge 25 policy strictly enforced; all staff briefed before service begins.','Responsible service of alcohol — monitor guests for signs of intoxication; refuse service as required.','Glassware to be handled safely; breakages cleared immediately using dustpan and brush (not bare hands).','Bar stock deliveries: use sack truck; no lone lifting of kegs (over 20kg).','Drip mats and floor mats in place throughout service; spills cleared immediately.','Last orders and closing times communicated clearly to guests; post-event egress managed.'],hazards:['Alcohol-related incidents','Slips (wet bar floor)','Cuts from glassware','Manual handling (kegs)']},
+  'Guest Welcome & Registration':{overview:'Safe management of guest arrival, registration and orientation.',steps:['Registration area positioned to allow free flow — avoid bottlenecks at entrance.','Adequate staffing at entrance to prevent queuing in adverse weather.','Emergency evacuation route pointed out to guests on arrival.','Accessibility needs identified in advance; step-free routes confirmed and communicated.','All guest data handled in accordance with GDPR; sign-in sheets stored securely.'],hazards:['Congestion at entrance','Slips/trips in welcome area','Accessibility barriers']},
+  'Entertainment / Performers':{overview:'Safe management of live entertainment, performers and associated equipment.',steps:['Confirm all external performers carry their own public liability insurance (minimum £5M).','Stage area to be cordoned off from guest access during soundcheck and setup.','Performer/DJ cables routed safely away from guest areas.','If pyrotechnics or special effects are used, venue approval and specialist operator required.','Confirm performer load-in/out times and supervise access to back-of-house areas.','Clear performer briefing on emergency procedures before the event starts.'],hazards:['Electrical hazards','Noise exposure','Crowd surge','Pyrotechnics (if applicable)']},
+  'Site Inspection & Induction':{overview:'Pre-event site inspection and staff induction at the venue.',steps:['Appointed competent person to conduct site survey before any equipment is brought in.','Identify and record all hazards: uneven ground, low ceilings, restricted access, utilities.','Confirm locations of first aid kit, fire extinguishers, assembly point and emergency exits.','All ROAR staff to receive a site-specific induction before commencing work.','Record induction attendees in writing; induction to include emergency procedures.','Report any venue defects or hazards to venue management before commencing setup.'],hazards:['Unknown site hazards','Slips/trips','Insufficient emergency knowledge']},
+  'Breakdown & Load-Out':{overview:'Safe dismantling of all event infrastructure and removal of equipment from venue.',steps:['Confirm guest and client areas are clear before commencing breakdown.','Work in systematic sections — do not dismantle structures whilst guests are still present.','Adequate lighting to be maintained throughout breakdown, especially for evening events.','Heavy items loaded using sack trucks/trolleys; team lifts for items over 20kg.','All waste to be segregated and removed in accordance with venue waste policy.','Vehicle movements during load-out to be controlled — pedestrian/vehicle segregation maintained.','Final site sweep before departure — ensure nothing left behind and venue returned to agreed condition.'],hazards:['Fatigue (late finish)','Manual handling','Vehicle movements','Slips in low light']},
+};
+
+const RAMS_RISK_HAZARDS = [
+  ['Manual Handling — lifting and carrying equipment','Event staff, contractors',4,3,'Team lifts for items over 20kg. Use sack trucks and trolleys. Pre-event manual handling briefing.',2,3],
+  ['Working at Height — ladders, podiums, rigging','Event staff, rigging contractors',3,4,'Competent persons only. Ladders inspected before use. Safety harness for work above 2m. No lone working at height.',2,4],
+  ['Electrical Hazards — cabling, connections, equipment','All personnel and guests',3,4,'PAT-tested equipment. RCD protection. Cables protected in guest areas. Competent persons for connections.',2,4],
+  ['Slips, Trips and Falls — cables, wet floors, uneven ground','Guests, event staff, contractors',4,3,'Cable management throughout. Wet floor signs. Adequate lighting. Pre-event site inspection.',2,3],
+  ['Fire Risk — catering, temporary structures, décor','All persons on site',2,5,'Fire extinguishers in place. No naked flames without approval. Exits clear. Fire alarm tested. Catering fire precautions.',1,5],
+  ['Food Safety — allergens, temperature control, hygiene','Guests consuming food',3,4,'All catering staff hold Food Hygiene Level 2. Temperature logs maintained. Allergen information displayed.',2,4],
+  ['Crowd Management — congestion, crush, egress','Guests, event staff',3,4,'Capacity monitored. Clear egress routes. Staggered exit management. Staff at key flow points.',2,4],
+  ['Noise — PA systems, live music','Event staff, guests',4,2,'Staff ear protection during soundcheck. Noise level monitored. Guest notification of loud acts.',2,2],
+  ['Vehicle Movement — deliveries, loading','Event staff, contractors, guests',3,4,'Designated vehicle route. Pedestrian segregation. Hi-vis vests worn. Banksman for reversing.',2,4],
+  ['Alcohol-Related Incidents','Guests, event staff',4,3,'Challenge 25 enforced. Responsible service policy. Water and food available. Liaison with venue.',2,3],
+  ['Lone Working — setup and breakdown phases','ROAR event staff',3,3,'Check-in schedule established. No lone working at height. Mobile phone carried at all times.',2,3],
+  ['Medical Emergency — guest or staff','All persons on site',3,5,'First aider on site. First aid kit available. Emergency services contact confirmed. Nearest A&E identified.',2,5],
+  ['Gas / LPG — catering or heating equipment','Event staff, catering contractors',2,5,'Gas safety certificate confirmed. Connections checked with leak detector. Adequate ventilation.',1,5],
+  ['Working in Adverse Weather — outdoor events','Guests, event staff',3,3,'Weather forecast monitored. Contingency plan agreed with client. Structures checked for wind resistance.',2,3],
+  ['Fatigue — long event days, late finish','ROAR event staff, contractors',4,2,'Working hours monitored by Event Manager. Breaks planned. No driving if excessively fatigued.',2,2],
+];
+
+function ramsRiskColour(v){if(v<=3)return'#375623';if(v<=6)return'#b8860b';if(v<=12)return'#c00000';return'#7b0000';}
+function ramsRiskLabel(v){if(v<=3)return'Low';if(v<=6)return'Med';if(v<=12)return'High';return'Critical';}
+function fmtRamsDate(d){if(!d)return'—';try{const dt=new Date(d);return dt.toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'});}catch(e){return d;}}
+
+function ramsGenerateBrowser(p) {
+  const sn = p.rams_no && p.rams_no!=='AUTO' ? p.rams_no : ('ROAR-RAMS-' + String(Date.now()).slice(-4));
+  const acts = (p.activity_types||[]);
+  let secNum = 12;
+
+  const methodHtml = acts.map(act => {
+    const ms = RAMS_METHOD_STATEMENTS[act] || {overview:'Standard safe working practices apply.',steps:['Conduct pre-activity briefing.','Ensure all equipment is inspected before use.','Follow venue requirements and ROAR safe working procedures.','Report any hazards immediately to the Event Manager.'],hazards:['General site hazards']};
+    const n = secNum++;
+    return `
+    <div class="page-break"></div>
+    <div class="section-heading">§${n} &nbsp; Method Statement: ${act}</div>
+    <p class="body-text">${ms.overview}</p>
+    <table class="data-table" style="margin-bottom:14pt">
+      <tr><th colspan="2" style="background:#3d3935;color:#fff;font-size:9pt">Method Statement Steps</th></tr>
+      ${ms.steps.map((s,i)=>`<tr><td style="width:28pt;text-align:center;font-weight:700;color:#b8966a">${i+1}</td><td>${s}</td></tr>`).join('')}
+    </table>
+    <p style="font-size:9pt;font-weight:700;color:#3d3935;margin-bottom:6pt">Key Hazards:</p>
+    <p class="body-text">${ms.hazards.join(' &bull; ')}</p>`;
+  }).join('');
+
+  const riskRows = RAMS_RISK_HAZARDS.map(([hazard,who,il,is_,controls,rl,rs],i)=>{
+    const ir=il*is_,rr=rl*rs;
+    return `<tr>
+      <td style="text-align:center;font-weight:700">${i+1}</td>
+      <td>${hazard}</td><td>${who}</td>
+      <td style="text-align:center">${il}</td><td style="text-align:center">${is_}</td>
+      <td style="text-align:center;background:${ramsRiskColour(ir)};color:#fff;font-weight:700">${ir}<br><small>${ramsRiskLabel(ir)}</small></td>
+      <td style="font-size:8pt">${controls}</td>
+      <td style="text-align:center">${rl}</td><td style="text-align:center">${rs}</td>
+      <td style="text-align:center;background:${ramsRiskColour(rr)};color:#fff;font-weight:700">${rr}<br><small>${ramsRiskLabel(rr)}</small></td>
+    </tr>`;
+  }).join('');
+
+  const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<title>RAMS — ${p.event_name} — ${sn}</title>
+<style>
+  @page{size:A4;margin:18mm 15mm 18mm 15mm}
+  @page landscape{size:A4 landscape;margin:12mm}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Helvetica Neue',Arial,sans-serif;font-size:10pt;color:#2c2926;background:#fff}
+  .page-break{page-break-before:always;break-before:page}
+  .cover{min-height:100vh;display:flex;flex-direction:column;justify-content:space-between;padding:40pt 0}
+  .cover-brand{text-align:center;padding-bottom:30pt;border-bottom:2px solid #b8966a}
+  .cover-brand .roar{font-family:Georgia,serif;font-size:52pt;font-weight:300;letter-spacing:12pt;color:#3d3935}
+  .cover-brand .sub{font-size:9pt;letter-spacing:5pt;color:#b8966a;text-transform:uppercase;margin-top:6pt}
+  .cover-title{text-align:center;padding:40pt 0 30pt}
+  .cover-title h1{font-size:22pt;font-weight:700;color:#3d3935;letter-spacing:1pt;margin-bottom:10pt}
+  .cover-title .doc-type{font-size:12pt;color:#b8966a;letter-spacing:3pt;text-transform:uppercase}
+  .cover-table{width:100%;border-collapse:collapse;margin-bottom:30pt}
+  .cover-table td{padding:8pt 12pt;border:1px solid #e8e0d5;font-size:10pt}
+  .cover-table td:first-child{background:#f5f0ea;font-weight:700;color:#3d3935;width:35%;font-size:9pt;letter-spacing:.5pt;text-transform:uppercase}
+  .cover-footer{text-align:center;padding-top:20pt;border-top:1px solid #b8966a;font-size:8pt;color:#999}
+  .section-heading{font-size:14pt;font-weight:700;color:#3d3935;margin:20pt 0 10pt;padding-bottom:6pt;border-bottom:2px solid #b8966a}
+  .sub-heading{font-size:10.5pt;font-weight:700;color:#3d3935;margin:14pt 0 6pt}
+  .body-text{font-size:9.5pt;line-height:1.6;color:#2c2926;margin-bottom:8pt}
+  .data-table{width:100%;border-collapse:collapse;font-size:9pt;margin-bottom:12pt}
+  .data-table th{background:#3d3935;color:#fff;padding:6pt 8pt;text-align:left;font-size:9pt}
+  .data-table td{padding:5pt 8pt;border:1px solid #ddd;vertical-align:top}
+  .data-table tr:nth-child(even) td{background:#faf8f5}
+  .risk-table{width:100%;border-collapse:collapse;font-size:8pt;margin-bottom:12pt}
+  .risk-table th{background:#3d3935;color:#fff;padding:5pt 6pt;text-align:center;font-size:8pt;border:1px solid #222}
+  .risk-table td{padding:4pt 6pt;border:1px solid #ccc;vertical-align:middle}
+  .sign-box{border:1px solid #ccc;min-height:40pt;padding:6pt}
+  .info-grid{display:grid;grid-template-columns:1fr 1fr;gap:8pt;margin-bottom:12pt}
+  .info-item{padding:8pt 10pt;background:#f5f0ea;border-left:3pt solid #b8966a}
+  .info-item .label{font-size:8pt;color:#888;text-transform:uppercase;letter-spacing:.5pt;margin-bottom:3pt}
+  .info-item .value{font-size:10pt;font-weight:600;color:#3d3935}
+  .warning-box{background:#fef3c7;border:1pt solid #f59e0b;border-radius:4pt;padding:10pt 12pt;margin-bottom:12pt;font-size:9pt}
+  .header-bar{display:flex;justify-content:space-between;align-items:center;padding-bottom:8pt;border-bottom:1pt solid #b8966a;margin-bottom:16pt;font-size:8pt;color:#888}
+  .no-print{background:#1d4ed8;color:#fff;border:none;padding:10pt 20pt;border-radius:6pt;font-size:11pt;cursor:pointer;margin:0 8pt}
+  @media print{.no-print{display:none}}
+</style>
+</head><body>
+
+<!-- PRINT TOOLBAR -->
+<div class="no-print" style="position:fixed;top:0;left:0;right:0;background:#1e293b;padding:10px 20px;display:flex;align-items:center;gap:12px;z-index:9999;box-shadow:0 2px 8px rgba(0,0,0,.3)">
+  <span style="color:#fff;font-weight:700;font-size:13px">🛡️ ROAR Events — RAMS Document</span>
+  <span style="color:#94a3b8;font-size:12px">${sn} · ${p.event_name}</span>
+  <div style="margin-left:auto;display:flex;gap:8px">
+    <button class="no-print" onclick="window.print()">🖨 Print / Save as PDF</button>
+    <button class="no-print" onclick="window.close()" style="background:#475569">✕ Close</button>
+  </div>
+</div>
+<div style="height:52px" class="no-print"></div>
+
+<!-- ══ COVER PAGE ══ -->
+<div class="cover">
+  <div class="cover-brand">
+    <div class="roar">ROAR</div>
+    <div class="sub">Events Agency Ltd</div>
+  </div>
+  <div class="cover-title">
+    <div class="doc-type">Risk Assessment &amp; Method Statement</div>
+    <h1>${p.event_name}</h1>
+    <p style="font-size:11pt;color:#666;margin-top:8pt">${p.customer}</p>
+  </div>
+  <table class="cover-table">
+    <tr><td>Reference</td><td>${sn} &nbsp; Rev ${p.rev_no||'01'}</td></tr>
+    <tr><td>Event Date</td><td>${fmtRamsDate(p.event_date)}</td></tr>
+    <tr><td>Venue</td><td>${p.venue_address||'—'}</td></tr>
+    <tr><td>Client</td><td>${p.customer}</td></tr>
+    <tr><td>Event Type</td><td>${p.event_type}</td></tr>
+    <tr><td>Prepared By</td><td>${p.prepared_by||'Andy Palmer'} — Partner, ROAR Events Agency Ltd</td></tr>
+    <tr><td>Date Prepared</td><td>${fmtRamsDate(p.date)||fmtRamsDate(new Date().toISOString().slice(0,10))}</td></tr>
+    <tr><td>Status</td><td style="font-weight:700;color:#166534">APPROVED FOR USE</td></tr>
+  </table>
+  <div class="cover-footer">
+    ROAR Events Agency Ltd &nbsp;|&nbsp; andy@roareventsagency.co.uk &nbsp;|&nbsp; www.roareventsagency.co.uk<br>
+    This document is confidential and prepared for the above event only.
+  </div>
+</div>
+
+<!-- ══ AUTHORISATION ══ -->
+<div class="page-break"></div>
+<div class="header-bar"><span>ROAR Events Agency Ltd — RAMS</span><span>${sn}</span></div>
+<div class="section-heading">Authorisation &amp; Sign-Off</div>
+<table class="data-table" style="margin-bottom:20pt">
+  <tr><th style="width:30%">Role</th><th style="width:35%">Name &amp; Signature</th><th>Date</th></tr>
+  <tr><td>Prepared by</td><td class="sign-box"></td><td class="sign-box"></td></tr>
+  <tr><td>Reviewed by</td><td class="sign-box"></td><td class="sign-box"></td></tr>
+  <tr><td>Client Acknowledgement</td><td class="sign-box"></td><td class="sign-box"></td></tr>
+</table>
+<div class="warning-box">⚠️ This document must be reviewed and signed before work commences. Any significant changes to the event scope, venue, or activities require this document to be reviewed and re-issued.</div>
+
+<!-- ══ SCOPE ══ -->
+<div class="section-heading">Scope of Event</div>
+<div class="info-grid">
+  <div class="info-item"><div class="label">Client</div><div class="value">${p.customer}</div></div>
+  <div class="info-item"><div class="label">Event Name</div><div class="value">${p.event_name}</div></div>
+  <div class="info-item"><div class="label">Event Type</div><div class="value">${p.event_type}</div></div>
+  <div class="info-item"><div class="label">Expected Guests</div><div class="value">${p.guest_count}</div></div>
+  <div class="info-item"><div class="label">Venue</div><div class="value">${p.venue_address||'—'}</div></div>
+  <div class="info-item"><div class="label">Venue Type</div><div class="value">${p.venue_type||'—'}</div></div>
+  <div class="info-item"><div class="label">Catering</div><div class="value">${p.catering||'—'}</div></div>
+  <div class="info-item"><div class="label">Bar</div><div class="value">${p.bar||'—'}</div></div>
+  <div class="info-item"><div class="label">Entertainment</div><div class="value">${p.entertainment||'—'}</div></div>
+  <div class="info-item"><div class="label">Indoor / Outdoor</div><div class="value">${p.outdoor||'—'}</div></div>
+  <div class="info-item"><div class="label">Height Work</div><div class="value">${p.height_work||'None'}</div></div>
+  <div class="info-item"><div class="label">Staffing</div><div class="value">${p.staffing||'—'}</div></div>
+</div>
+${p.scope?`<div class="sub-heading">Scope Description</div><p class="body-text">${p.scope}</p>`:''}
+
+<!-- ══ §1 GUIDANCE ══ -->
+<div class="page-break"></div>
+<div class="section-heading">§1 &nbsp; Guidance for Users of This Document</div>
+<p class="body-text">This Risk Assessment and Method Statement (RAMS) has been prepared by ROAR Events Agency Ltd for the above event. It must be read by all personnel involved in the event before work commences.</p>
+<div class="sub-heading">Key Principles</div>
+<table class="data-table">
+  <tr><th style="width:30%">Principle</th><th>Details</th></tr>
+  <tr><td>Stop and Report</td><td>If you encounter a hazard not covered in this document, stop work and report it to the Event Manager immediately.</td></tr>
+  <tr><td>Site Induction</td><td>All staff and contractors must receive a site-specific induction before commencing work at the venue.</td></tr>
+  <tr><td>Competence</td><td>Only trained and competent persons may carry out specialist tasks (electrical, rigging, catering).</td></tr>
+  <tr><td>Emergency</td><td>All staff must know the location of the first aid kit, emergency exits, assembly point, and the name of the First Aider on site.</td></tr>
+  <tr><td>No Lone Working</td><td>Working alone at height or in isolated areas is not permitted. A buddy system or check-in schedule must be in place.</td></tr>
+  <tr><td>Document Control</td><td>This document supersedes all previous versions. Only the current signed version is valid for use.</td></tr>
+</table>
+
+<!-- ══ §2 EVENT SPECIFICATION ══ -->
+<div class="section-heading">§2 &nbsp; Event Specification</div>
+<table class="data-table">
+  <tr><th colspan="2" style="background:#3d3935;color:#fff">Event Details</th></tr>
+  <tr><td style="width:35%">Event Name</td><td>${p.event_name}</td></tr>
+  <tr><td>Client</td><td>${p.customer}</td></tr>
+  <tr><td>Venue</td><td>${p.venue_address||'—'}</td></tr>
+  <tr><td>Venue Type</td><td>${p.venue_type||'—'}</td></tr>
+  <tr><td>Expected Attendance</td><td>${p.guest_count} guests</td></tr>
+  <tr><td>Event Type</td><td>${p.event_type}</td></tr>
+  <tr><td>Catering Provision</td><td>${p.catering||'Not specified'}</td></tr>
+  <tr><td>Bar Provision</td><td>${p.bar||'Not specified'}</td></tr>
+  <tr><td>Entertainment</td><td>${p.entertainment||'None'}</td></tr>
+  <tr><td>Indoor / Outdoor</td><td>${p.outdoor||'Indoor'}</td></tr>
+  <tr><td>Height Work Required</td><td>${p.height_work||'None'}</td></tr>
+  <tr><td>Staffing Level</td><td>${p.staffing||'TBC'}</td></tr>
+</table>
+
+<!-- ══ §3 TIMELINE ══ -->
+<div class="section-heading">§3 &nbsp; Event Timeline &amp; Logistics</div>
+<table class="data-table">
+  <tr><th style="width:25%">Time</th><th>Activity</th></tr>
+  <tr><td>${p.setup_time||'TBC'}</td><td>Venue access / crew call. Site induction for all staff. Activity method statements to be followed during setup.</td></tr>
+  <tr><td>${p.doors_time||'TBC'}</td><td>Venue opens to guests. Crowd management measures in place. First Aider on standby.</td></tr>
+  <tr><td>During event</td><td>ROAR Event Manager present on site. All emergency procedures on standby.</td></tr>
+  <tr><td>${p.end_time||'TBC'}</td><td>Event concludes. Guests safely egressed. Breakdown commences per method statement.</td></tr>
+  <tr><td>Post-event</td><td>Site inspected, equipment removed, venue returned to agreed condition. Final sign-off with venue manager.</td></tr>
+</table>
+
+<!-- ══ §4 HAZARD AREAS ══ -->
+<div class="section-heading">§4 &nbsp; Hazard Areas &amp; Exclusion Zones</div>
+<table class="data-table">
+  <tr><th style="width:35%">Area / Zone</th><th>Hazard</th><th style="width:30%">Control</th></tr>
+  <tr><td>Stage / Performance Area</td><td>Falls, electrical, manual handling</td><td>Barriers / crew only access during setup</td></tr>
+  <tr><td>Catering / Kitchen Area</td><td>Burns, scalds, allergens, slips</td><td>Staff only; wet floor signs; allergen controls</td></tr>
+  <tr><td>Loading / Delivery Area</td><td>Vehicle movement, manual handling</td><td>Pedestrian / vehicle segregation; hi-vis</td></tr>
+  <tr><td>Bar Area</td><td>Slips, glassware, intoxication</td><td>Non-slip mats; Challenge 25; glass protocol</td></tr>
+  <tr><td>Guest Circulation Areas</td><td>Congestion, trips, emergency egress</td><td>Adequate signage; staff at key points</td></tr>
+  <tr><td>Technical / AV Area</td><td>Electrical, cables, equipment</td><td>Competent persons; cable management; PAT test</td></tr>
+</table>
+
+<!-- ══ §5 CONTACTS ══ -->
+<div class="section-heading">§5 &nbsp; ROAR Events Agency — Contacts</div>
+<table class="data-table">
+  <tr><th>Role</th><th>Name</th><th>Contact</th></tr>
+  <tr><td>Event Manager / Prepared By</td><td>${p.prepared_by||'Andy Palmer'}</td><td>${p.contact_email||'info@roareventsagency.co.uk'}</td></tr>
+  <tr><td>First Aider on Site</td><td colspan="2">To be confirmed and briefed on-site before event commences</td></tr>
+  <tr><td>Venue Contact</td><td colspan="2">To be confirmed with venue prior to event</td></tr>
+  <tr><td>Emergency Services</td><td colspan="2">999 (Emergency) &nbsp;|&nbsp; 111 (Non-emergency medical)</td></tr>
+</table>
+
+<!-- ══ §6 STAFFING ══ -->
+<div class="section-heading">§6 &nbsp; Staffing &amp; Qualifications</div>
+<p class="body-text">All ROAR Events Agency staff are briefed on this RAMS document prior to the event. Minimum competency requirements are as follows:</p>
+<table class="data-table">
+  <tr><th>Role</th><th>Required Competency</th></tr>
+  <tr><td>Event Manager</td><td>Experience managing events of this scale. First Aid awareness. Full RAMS briefing completed.</td></tr>
+  <tr><td>Event Staff (General)</td><td>Site induction completed. Manual handling awareness. Emergency procedure knowledge.</td></tr>
+  <tr><td>Catering Staff</td><td>Food Hygiene Level 2 (minimum). Allergen awareness training.</td></tr>
+  <tr><td>Technical / AV</td><td>Competent person for electrical connections. PAT testing knowledge.</td></tr>
+  <tr><td>First Aider</td><td>Valid First Aid at Work or Emergency First Aid certificate.</td></tr>
+</table>
+
+<!-- ══ §7–§11 STANDARD SECTIONS ══ -->
+<div class="section-heading">§7 &nbsp; Equipment &amp; Resources</div>
+<table class="data-table">
+  <tr><th style="width:40%">Item</th><th>Requirement</th></tr>
+  <tr><td>First Aid Kit</td><td>Fully stocked kit on site at all times; location communicated to all staff</td></tr>
+  <tr><td>Fire Extinguishers</td><td>Venue extinguishers confirmed operational; additional extinguishers for catering areas</td></tr>
+  <tr><td>Electrical Equipment</td><td>All portable appliances PAT tested within required period</td></tr>
+  <tr><td>Ladders / Access Equipment</td><td>Inspected before use; tied or footed during use; competent persons only</td></tr>
+  <tr><td>Communication</td><td>Radios or mobile phones for all key staff; charged before event</td></tr>
+</table>
+
+<div class="section-heading">§8 &nbsp; Crowd &amp; Area Management</div>
+<p class="body-text">Guest capacity for this event is ${p.guest_count}. The following crowd management measures will be in place:</p>
+<table class="data-table">
+  <tr><th style="width:35%">Measure</th><th>Detail</th></tr>
+  <tr><td>Entrance Management</td><td>Managed arrival and registration to prevent congestion at entrance</td></tr>
+  <tr><td>Egress Routes</td><td>All emergency exits clearly signed and kept free from obstruction at all times</td></tr>
+  <tr><td>Capacity Monitoring</td><td>Crowd density monitored by Event Manager throughout</td></tr>
+  <tr><td>Staff Positioning</td><td>Staff stationed at key crowd flow points during peak times</td></tr>
+  <tr><td>Emergency Egress</td><td>Assembly point identified and communicated to all staff and guests on arrival</td></tr>
+</table>
+
+<div class="section-heading">§9 &nbsp; Personal Protective Equipment (PPE)</div>
+<table class="data-table">
+  <tr><th style="width:35%">Task / Area</th><th>PPE Required</th></tr>
+  <tr><td>Manual handling (heavy items)</td><td>Safety footwear, gloves</td></tr>
+  <tr><td>Working at height</td><td>Safety footwear, harness (above 2m), hard hat if overhead work</td></tr>
+  <tr><td>Catering / kitchen</td><td>Non-slip footwear, apron, heat-resistant gloves, cut-resistant gloves where required</td></tr>
+  <tr><td>AV / electrical work</td><td>Insulated gloves for live connections, safety footwear</td></tr>
+  <tr><td>Loading / delivery area</td><td>Hi-vis vest, safety footwear</td></tr>
+  <tr><td>Near loud PA / sound system</td><td>Hearing protection during soundcheck</td></tr>
+</table>
+
+<div class="section-heading">§10 &nbsp; Emergency Procedures</div>
+<table class="data-table">
+  <tr><th style="width:30%">Emergency</th><th>Action</th></tr>
+  <tr><td>Fire / Evacuation</td><td>Activate alarm. Call 999. Evacuate all persons via emergency exits to assembly point. Do not re-enter. Await emergency services.</td></tr>
+  <tr><td>Medical Emergency</td><td>Call 999 immediately. Send staff to meet ambulance. First Aider to attend. Do not move casualty unless in danger. Record incident.</td></tr>
+  <tr><td>Serious Injury</td><td>Call 999. Preserve scene. Inform Event Manager. Report to HSE if RIDDOR-reportable. Complete incident report.</td></tr>
+  <tr><td>Structural Failure</td><td>Evacuate area immediately. Do not re-enter. Call 999 if persons trapped. Preserve scene for investigation.</td></tr>
+  <tr><td>Security Incident</td><td>Call 999. Remove guests from danger. Do not confront. Cooperate with police. Preserve evidence.</td></tr>
+</table>
+
+<div class="section-heading">§11 &nbsp; General Event Procedures</div>
+<table class="data-table">
+  <tr><th style="width:35%">Procedure</th><th>Detail</th></tr>
+  <tr><td>Pre-event Briefing</td><td>All staff briefed on RAMS, emergency procedures and their specific roles before the event begins</td></tr>
+  <tr><td>Incident Reporting</td><td>All accidents, near-misses and hazards to be reported to Event Manager and recorded in writing</td></tr>
+  <tr><td>Contractor Management</td><td>All contractors to provide evidence of public liability insurance and their own risk assessments</td></tr>
+  <tr><td>Alcohol Policy</td><td>Challenge 25 enforced. Intoxicated persons refused service. Venue ejection policy followed.</td></tr>
+  <tr><td>GDPR / Data</td><td>Guest data collected and stored in accordance with ROAR Events Agency privacy policy</td></tr>
+  <tr><td>Post-Event Review</td><td>Event Manager to complete post-event debrief and update this RAMS if lessons learned require it</td></tr>
+</table>
+
+${methodHtml}
+
+<!-- ══ RISK ASSESSMENT MATRIX ══ -->
+<div class="page-break"></div>
+<div class="header-bar"><span>ROAR Events Agency Ltd — RAMS</span><span>${sn}</span></div>
+<div class="section-heading">§${secNum} &nbsp; Risk Assessment Matrix</div>
+<p style="font-size:8.5pt;color:#666;margin-bottom:10pt">Event: <strong>${p.event_name}</strong> &nbsp;|&nbsp; Client: <strong>${p.customer}</strong> &nbsp;|&nbsp; Date: <strong>${fmtRamsDate(p.event_date)}</strong></p>
+<table style="width:100%;border-collapse:collapse;font-size:8pt;margin-bottom:10pt">
+  <tr>
+    <td style="background:#3d3935;color:#fff;padding:5pt 8pt;font-weight:700;font-size:8pt">Likelihood (L)</td>
+    <td style="background:#375623;color:#fff;padding:5pt 8pt;text-align:center">1 Rare</td>
+    <td style="background:#4a7c2e;color:#fff;padding:5pt 8pt;text-align:center">2 Unlikely</td>
+    <td style="background:#b8860b;color:#fff;padding:5pt 8pt;text-align:center">3 Possible</td>
+    <td style="background:#c00000;color:#fff;padding:5pt 8pt;text-align:center">4 Likely</td>
+    <td style="background:#7b0000;color:#fff;padding:5pt 8pt;text-align:center">5 Almost Certain</td>
+    <td style="background:#3d3935;color:#fff;padding:5pt 8pt;font-weight:700">Severity (S)</td>
+    <td style="background:#888;color:#fff;padding:5pt 8pt;text-align:center">1=Trivial → 5=Fatal</td>
+  </tr>
+</table>
+<table class="risk-table">
+  <tr>
+    <th style="width:4%">Ref</th><th style="width:18%">Hazard</th><th style="width:13%">Persons at Risk</th>
+    <th style="width:4%">L</th><th style="width:4%">S</th><th style="width:6%">Risk (LxS)</th>
+    <th style="width:33%">Control Measures</th>
+    <th style="width:4%">Res.L</th><th style="width:4%">Res.S</th><th style="width:6%">Res.Risk</th>
+  </tr>
+  ${riskRows}
+</table>
+
+<!-- ══ DOCUMENT FOOTER ══ -->
+<div class="page-break"></div>
+<div style="text-align:center;padding:60pt 0;color:#999;font-size:9pt">
+  <div style="font-family:Georgia,serif;font-size:24pt;font-weight:300;letter-spacing:8pt;color:#3d3935;margin-bottom:8pt">ROAR</div>
+  <div style="font-size:8pt;letter-spacing:3pt;color:#b8966a;text-transform:uppercase;margin-bottom:20pt">Events Agency Ltd</div>
+  <p>This document was generated by ROAR Events Agency Ltd</p>
+  <p>Reference: ${sn} | Prepared: ${fmtRamsDate(p.date||new Date().toISOString().slice(0,10))}</p>
+  <p style="margin-top:8pt">andy@roareventsagency.co.uk &nbsp;|&nbsp; www.roareventsagency.co.uk</p>
+</div>
+
+</body></html>`;
+
+  const w = window.open('','_blank');
+  if(!w){alert('Pop-up blocked — please allow pop-ups for this page and try again.');return;}
+  w.document.write(html);
+  w.document.close();
+  // Auto-open print dialog after a moment
+  w.onload = () => setTimeout(()=>w.focus(), 800);
 }
 async function ramsCheckServer() {
   const banner=document.getElementById('rams-server-banner');
